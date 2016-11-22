@@ -18,7 +18,7 @@
 
 static struct termios term_old;
 struct epoll_event ev, events[MAX_EVENTS];
-int conn_sock, nfds, epoll_fd;
+int client_sock, nfds, epoll_fd;
 pthread_mutex_t mutx;
 
 void initTermios(void);
@@ -146,8 +146,9 @@ int
 launch_server(void)
 {
     int serverSock, acceptedSock;
-    struct sockaddr_in Addr;
+    struct sockaddr_in Addr, client_Addr;
     socklen_t AddrSize = sizeof(Addr);
+    socklen_t C_AddrSize = sizeof(client_Addr);
     char data[MAX_DATA], *p;
     int ret, count, i = 1;
     pthread_t thread;
@@ -187,7 +188,7 @@ launch_server(void)
         perror("epoll_ctl: serverSock");
         exit(EXIT_FAILURE);
     } 
-    //어디에?
+    
     if ((acceptedSock = accept(serverSock, (struct sockaddr*)&Addr, &AddrSize)) < 0) {
         perror("accept");
         ret = -1;
@@ -202,7 +203,7 @@ launch_server(void)
         if ((nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1)) == -1) {
             perror("epoll_pwait");
             exit(EXIT_FAILURE);
-        }
+        }/*
         if (!(ret = count = recv(acceptedSock, data, MAX_DATA, 0))) {
             fprintf(stderr, "Connect Closed by Client\n");
             break;
@@ -210,10 +211,28 @@ launch_server(void)
         if (ret < 0) {
             perror("recv");
             break;
-        }
+        }*/
         //printf("[%d]", count); fflush(stdout);
-        for (i = 0; i < count; i++)
+        for (i = 0; i < nfds; i++){ //epoll 이벤트 받은 만큼 반복
             printf("%c", data[i]);
+            if(events[i].data.fd == serverSock){ //이벤트 들어온 소켓이 연결 요청일 때
+                client_sock = accept(serverSock, (struct sockaddr *) &client_Addr, &C_AddrSize);
+                if(client_sock == -1){
+                    perror("accept");
+                    exit(EXIT_FAILURE);
+                }
+                setnonblocking(client_sock); //non-blocking mode set
+                ev.events = EPOLLIN;
+                ev.data.fd = client_sock;
+                if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_sock, &ev) == -1){
+                    perror("epoll_ctl: client_sock");
+                    exit(EXIT_FAILURE);
+                }
+            } else{
+                do_use_fd(events[i].data.fd);
+            }
+            
+        }
         fflush(stdout);
         p = data;
         while (count) {
