@@ -18,7 +18,7 @@
 
 static struct termios term_old;
 struct epoll_event ev, events[MAX_EVENTS];
-int client_sock, nfds, epoll_fd;
+int conn_sock, nfds, epoll_fd;
 pthread_mutex_t mutx;
 
 void initTermios(void);
@@ -145,18 +145,17 @@ leave:
 int
 launch_server(void)
 {
-    int serverSock, acceptedSock;
-    struct sockaddr_in Addr, client_Addr;
+    int serverSock, clientSock;
+    struct sockaddr_in Addr;
     socklen_t AddrSize = sizeof(Addr);
-    socklen_t C_AddrSize = sizeof(client_Addr);
     char data[MAX_DATA], *p;
     int ret, count, i = 1;
     pthread_t thread;
 
-    /*if(pthread_mutex_init(&mutx,NULL)){
+    if(pthread_mutex_init(&mutx,NULL)){
         perror("mutex init error");
         goto leave;
-    } */
+    } 
 
     if ((ret = serverSock = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket");
@@ -178,7 +177,7 @@ launch_server(void)
         goto error;
     }
     // epoll 이벤트 설정 및 활성화
-    if (epoll_fd = epoll_create(10) < 0) {
+    if (epoll_fd = epoll_create(20) < 0) {
         perror("epoll_create");
         exit(EXIT_FAILURE);
     }
@@ -188,12 +187,6 @@ launch_server(void)
         perror("epoll_ctl: serverSock");
         exit(EXIT_FAILURE);
     } 
-    
-    if ((acceptedSock = accept(serverSock, (struct sockaddr*)&Addr, &AddrSize)) < 0) {
-        perror("accept");
-        ret = -1;
-        goto error;
-    }
 
     printf("[SERVER] Connected to %s\n", inet_ntoa(*(struct in_addr *)&Addr.sin_addr));
     //close(serverSock);
@@ -203,40 +196,43 @@ launch_server(void)
         if ((nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, -1)) == -1) {
             perror("epoll_pwait");
             exit(EXIT_FAILURE);
-        }/*
-        if (!(ret = count = recv(acceptedSock, data, MAX_DATA, 0))) {
-            fprintf(stderr, "Connect Closed by Client\n");
-            break;
         }
-        if (ret < 0) {
-            perror("recv");
-            break;
-        }*/
-        //printf("[%d]", count); fflush(stdout);
-        for (i = 0; i < nfds; i++){ //epoll 이벤트 받은 만큼 반복
-            printf("%c", data[i]);
-            if(events[i].data.fd == serverSock){ //이벤트 들어온 소켓이 연결 요청일 때
-                client_sock = accept(serverSock, (struct sockaddr *) &client_Addr, &C_AddrSize);
-                if(client_sock == -1){
-                    perror("accept");
+        //이벤트 발생 수 만큼 반복
+        for (i = 0; i < nfds; i++){
+            //이벤트가 발생한 소켓이 서버 소켓이라면 연결 소켓을 생성한다.
+            if(events[i].data.fd == serverSock){
+                if ((clientSock = accept(serverSock, (struct sockaddr*)&Addr, &AddrSize)) < 0){
+                perror("accept");
+                ret = -1;
+                goto error;
+                }
+                setnonblocking(clientSock);
+                ev.events = EPOLLIN || EPOLLET;
+                ev.data.fd = clientSock;
+                if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, clientSock, &ev) == -1) {
+                    perror("epoll_ctl: conn_sock");
                     exit(EXIT_FAILURE);
                 }
-                setnonblocking(client_sock); //non-blocking mode set
-                ev.events = EPOLLIN;
-                ev.data.fd = client_sock;
-                if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_sock, &ev) == -1){
-                    perror("epoll_ctl: client_sock");
-                    exit(EXIT_FAILURE);
-                }
-            } else{
-                do_use_fd(events[i].data.fd);
             }
-            
+            //이벤트가 발생한 소켓이 연결 소켓이라면 데이터를 읽어온다.
+            else{
+                if (!(ret = count = recv(clientSock, data, MAX_DATA, 0))) {
+                    fprintf(stderr, "Connect Closed by Client\n");
+                    break;
+                }
+                if (count < 0) {
+                    perror("recv");
+                    break;
+                }
+                else{ 
+                    printf("%c", data[i]);
+                }
+            }
         }
         fflush(stdout);
         p = data;
         while (count) {
-            if ((ret = send(acceptedSock, p, count, 0)) < 0) {
+            if ((ret = send(clientSock, p, count, 0)) < 0) {
                 perror("send");
                 break;
             }
@@ -245,7 +241,7 @@ launch_server(void)
         }
     }
 
-    close(acceptedSock);
+    close(clientSock);
 error:
     close(serverSock);
 leave:
