@@ -225,7 +225,7 @@ launch_server(void)
                 if(count == 20){
                     server_send_message(p,1); //client에 '$' 전송
                 }
-                //setnonblocking(clientSock);
+                setnonblocking(clientSock);
                 ev.events = EPOLLIN || EPOLLET;
                 ev.data.fd = clientSock;
                 if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, clientSock, &ev) == -1) {
@@ -381,6 +381,7 @@ void *client_send_message(void *arg)
     }
     //입력할 값이 NULL이 아닐때까지 - NULL이면 '@' 송신
     write(socket, (p+1), 1);
+    close(file);
 }
 
 void *recv_message(void *arg)
@@ -405,6 +406,7 @@ void *recv_message(void *arg)
         fputs(message, stdout);
         fwrite(message, str_len, 1, fout);
     }
+    close(fout);
 }
 
 int
