@@ -15,11 +15,15 @@
 #define MAX_CLIENT 1024
 #define MAX_DATA 1024
 #define MAX_EVENTS 50
+#define DELIM "\n"
 
 static struct termios term_old;
 struct epoll_event ev, events[MAX_EVENTS];
-int conn_sock, nfds, epoll_fd;
+int nfds, epoll_fd;
 pthread_mutex_t mutx;
+int client_number = 0; //연결된 client 갯수 저장 변수
+int client_socket[MAX_CLIENT]; //연결된 모든 client에 메세지 전송을 위한 client 소켓 정보 변수
+char p[3] = {'$', '%'};
 
 void initTermios(void);
 void resetTermios(void);
@@ -28,7 +32,12 @@ int launch_chat(void);
 int launch_clients(int num_client);
 int launch_server(void);
 int get_server_status(void);
- 
+
+void *client_connection(void *arg);
+void server_send_message(char *message, int len);
+void *client_send_message(void *arg);
+void *recv_message(void *arg);
+
 int
 main(int argc, char *argv[])
 {
@@ -146,11 +155,16 @@ int
 launch_server(void)
 {
     int serverSock, clientSock;
-    struct sockaddr_in Addr;
-    socklen_t AddrSize = sizeof(Addr);
-    char data[MAX_DATA], *p;
-    int ret, count, i = 1;
+    struct sockaddr_in serverAddr, clientAddr;
+    socklen_t C_AddrSize = sizeof(clientAddr);
+    socklen_t S_AddrSize = sizeof(serverAddr);
+    int ret, count = 0, i = 1;
+    struct timeval before, after;
+    int duration;
     pthread_t thread;
+    void *thread_return;
+
+    gettimeofday(&before, NULL);
 
     if(pthread_mutex_init(&mutx,NULL)){
         perror("mutex init error");
@@ -164,10 +178,11 @@ launch_server(void)
 
     setsockopt(serverSock, SOL_SOCKET, SO_REUSEADDR, (void *)&i, sizeof(i));
 
-    Addr.sin_family = AF_INET;
-    Addr.sin_addr.s_addr = INADDR_ANY;
-    Addr.sin_port = htons(PORT);
-    if ((ret = bind(serverSock, (struct sockaddr *)&Addr,sizeof(Addr)))) {
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(PORT);
+    
+    if ((ret = bind(serverSock, (struct sockaddr *)&serverAddr,sizeof(serverAddr)))) {
         perror("bind");
         goto error;
     }
@@ -188,7 +203,7 @@ launch_server(void)
         exit(EXIT_FAILURE);
     } 
 
-    printf("[SERVER] Connected to %s\n", inet_ntoa(*(struct in_addr *)&Addr.sin_addr));
+    printf("[SERVER] Connected to %s\n", inet_ntoa(*(struct in_addr *)&serverAddr.sin_addr));
     //close(serverSock);
 
     while (1) {
@@ -201,57 +216,195 @@ launch_server(void)
         for (i = 0; i < nfds; i++){
             //이벤트가 발생한 소켓이 서버 소켓이라면 연결 소켓을 생성한다.
             if(events[i].data.fd == serverSock){
-                if ((clientSock = accept(serverSock, (struct sockaddr*)&Addr, &AddrSize)) < 0){
+                if ((clientSock = accept(serverSock, (struct sockaddr*)&clientAddr, &C_AddrSize)) < 0){
                 perror("accept");
                 ret = -1;
                 goto error;
                 }
-                setnonblocking(clientSock);
+                count++;
+                if(count == 20){
+                    server_send_message(p,1); //client에 '$' 전송
+                }
+                //setnonblocking(clientSock);
                 ev.events = EPOLLIN || EPOLLET;
                 ev.data.fd = clientSock;
                 if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, clientSock, &ev) == -1) {
-                    perror("epoll_ctl: conn_sock");
+                    perror("epoll_ctl: clientSock");
                     exit(EXIT_FAILURE);
                 }
             }
             //이벤트가 발생한 소켓이 연결 소켓이라면 데이터를 읽어온다.
             else{
-                if (!(ret = count = recv(clientSock, data, MAX_DATA, 0))) {
-                    fprintf(stderr, "Connect Closed by Client\n");
-                    break;
-                }
-                if (count < 0) {
-                    perror("recv");
-                    break;
-                }
-                else{ 
-                    printf("%c", data[i]);
-                }
+                pthread_mutex_lock(&mutx);
+                client_socket[client_number++] = clientSock;
+                pthread_mutex_unlock(&mutx);
+                pthread_create(&thread, NULL, client_connection, (void *)clientSock);
+                printf("New client connected");
             }
-        }
-        fflush(stdout);
-        p = data;
-        while (count) {
-            if ((ret = send(clientSock, p, count, 0)) < 0) {
-                perror("send");
-                break;
-            }
-            count -= ret;
-            p = p + ret;
         }
     }
 
-    close(clientSock);
+    pthread_join(thread, &thread_return);
+    pthread_mutex_destroy(&mutx);
+
+    gettimeofday(&after, NULL);
+
+    duration = (after.tv_sec - before.tv_sec) * 1000000 + (after.tv_usec - before.tv_usec);
+    printf("Processing time = %d.%06d sec\n", duration / 1000000, duration % 1000000);
+
+    //close(clientSock);
 error:
     close(serverSock);
 leave:
     return ret;
 }
 
+void *client_connection(void *arg)
+{
+    int clientSock = (int)arg;
+    int str_len = 0;
+    char message[MAX_DATA];
+    int i = 0, count = 0;
+
+    //수신된 메세지의 길이가 0이거나 %를 수신받는 경우에는 client의 연결이 종료된다.
+    while(1){
+        if((str_len = read(clientSock, message, sizeof(message))) != 0) 
+            break;
+        if(message[str_len-1] == '@'){
+            count++;
+            if(count == 20){ //모든 client로부터 '@'를 수신하면
+                server_send_message((p+1), 1); //모든 client에 '%' 송신
+                break;
+            }
+        }
+        else
+            server_send_message(message, str_len); //수신된 메세지 모든 client에 전송
+    }
+        pthread_mutex_lock(&mutx);
+        for(i=0;i<client_number;i++){
+            if(clientSock == client_socket[i]){
+                for(;i<client_number-1;i++)
+                    client_socket[i] = client_socket[i+1];
+                break;
+            }
+        }
+        client_number--;
+        pthread_mutex_unlock(&mutx);
+        
+        close(clientSock);
+        return 0;
+}
+
+void server_send_message(char *message, int len)
+{
+    int i = 0;
+
+    pthread_mutex_lock(&mutx);
+    for(i=0;i<client_number;i++){
+        write(client_socket[i],message,len);
+    }
+    pthread_mutex_unlock(&mutx);
+}
+
 int
 launch_clients(int num_client)
 {
+    char message[MAX_DATA];
+    int clientSock;
+    struct sockaddr_in serverAddr;
+    pthread_t send_thread, recv_thread;
+    
+    void *thread_return;
+
+    if ((clientSock = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("socket");
+        exit(1);
+    }
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = inet_addr(IP);
+    serverAddr.sin_port = htons(PORT);
+
+    if ((connect(clientSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)))) {
+        perror("connect");
+        exit(1);
+    }
+    printf("[CLIENT] Connected to %s\n", inet_ntoa(*(struct in_addr *)&serverAddr.sin_addr));
+
+    initTermios();
+
+    //메세지 전송 & 수신 thread 생성과 호출
+    pthread_create(&send_thread, NULL, client_send_message, (void *)clientSock);
+    pthread_create(&recv_thread, NULL, recv_message, (void *)clientSock);
+    
+    //thread가 종료될 때까지 대기
+    pthread_join(send_thread, &thread_return);
+    pthread_join(recv_thread, &thread_return);
+
+    close(clientSock);
     return 0;
+}
+
+void *client_send_message(void *arg)
+{
+    FILE *file;
+    char *buff, *token, *ptr[2];
+    long f_size;
+    size_t tmp;
+    char p[3] = {'\n', '@'};
+
+    int socket = (int)arg;
+    if(file = fopen("/home/pi/adv-sys-programming/tmp/file_", "r") == NULL){
+        perror("fopen");
+        exit(1);
+    }
+    //파일의 크기를 f_size에 저장한다.
+    fseek(file, 0, SEEK_END); 
+    f_size = ftell(file);
+    rewind(file);
+    //버퍼의 메모리를 할당한다.
+    buff = (char *)malloc(sizeof(char)*f_size);
+    if (buff == NULL){
+        fputs ("error, buff_malloc\n", stderr);
+        free(buff);
+        return 1;
+    }
+    //파일을 읽어온다.
+    tmp = fread(buff, f_size, 1, file);
+    //파일을 파싱한다.
+    token = strtok_r(buff, DELIM, &ptr[0]);
+
+    while(token != NULL){
+        //'$'을 받으면 메세지 전송
+        write(socket, token, strlen(token));
+        write(socket, p, 1);
+        token = strtok_r(NULL, DELIM, &ptr[0]);
+    }
+    //입력할 값이 NULL이 아닐때까지 - NULL이면 '@' 송신
+    write(socket, (p+1), 1);
+}
+
+void *recv_message(void *arg)
+{
+    FILE *fout;
+    char filename[100];
+
+    int socket = (int)arg;
+    char message[MAX_DATA];
+    int str_len;
+    int thread_return;
+
+    sprintf(filename, "fout_%d.txt", arg);
+    fout = fopen(filename, "a+");
+
+    while(1){
+        if(str_len = read(socket, message, MAX_DATA-1) == -1){
+            thread_return = 1;
+            return (void *)thread_return;
+        }
+        message[str_len] = 0; //수신된 메세지의 마지막에 NULL을 지정한다.
+        fputs(message, stdout);
+        fwrite(message, str_len, 1, fout);
+    }
 }
 
 int
