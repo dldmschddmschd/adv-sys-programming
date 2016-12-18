@@ -166,7 +166,7 @@ int setnonblocking(int fd)
     flags = 1;
     return ioctl(fd, FIOBIO, &flags);
 #endif
-}     
+}  
 
 int
 launch_server(void)
@@ -215,10 +215,6 @@ launch_server(void)
     }
     ev.events = EPOLLIN; 
     ev.data.fd = serverSock;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, serverSock, &ev) == -1) {
-        perror("epoll_ctl: serverSock");
-        exit(EXIT_FAILURE);
-    } 
 
     printf("[SERVER] Connected to %s\n", inet_ntoa(*(struct in_addr *)&serverAddr.sin_addr));
     //close(serverSock);
@@ -332,30 +328,34 @@ launch_clients(int num_client)
     pthread_t send_thread, recv_thread;
     
     void *thread_return;
-
-    if ((clientSock = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
-        perror("socket");
-        exit(1);
-    }
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = inet_addr(IP);
-    serverAddr.sin_port = htons(PORT);
-
-    if ((connect(clientSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)))) {
-        perror("connect");
-        exit(1);
-    }
-    printf("[CLIENT] Connected to %s\n", inet_ntoa(*(struct in_addr *)&serverAddr.sin_addr));
-
-    initTermios();
-
-    //메세지 전송 & 수신 thread 생성과 호출
-    pthread_create(&send_thread, NULL, client_send_message, (void *)clientSock);
-    pthread_create(&recv_thread, NULL, recv_message, (void *)clientSock);
     
-    //thread가 종료될 때까지 대기
-    pthread_join(send_thread, &thread_return);
-    pthread_join(recv_thread, &thread_return);
+    while(num_client != 0){
+        if ((clientSock = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+            perror("socket");
+            exit(1);
+        }
+        serverAddr.sin_family = AF_INET;
+        serverAddr.sin_addr.s_addr = inet_addr(IP);
+        serverAddr.sin_port = htons(PORT);
+
+        if ((connect(clientSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)))) {
+            perror("connect");
+            exit(1);
+        }
+        printf("[CLIENT] Connected to %s\n", inet_ntoa(*(struct in_addr *)&serverAddr.sin_addr));
+
+        initTermios();
+
+        //메세지 전송 & 수신 thread 생성과 호출
+        pthread_create(&send_thread, NULL, client_send_message, (void *)clientSock);
+        pthread_create(&recv_thread, NULL, recv_message, (void *)clientSock);
+        
+        //thread가 종료될 때까지 대기
+        pthread_join(send_thread, &thread_return);
+        pthread_join(recv_thread, &thread_return);
+
+        num_client--;
+    }
 
     close(clientSock);
     return 0;
@@ -370,7 +370,7 @@ void *client_send_message(void *arg)
     char p[3] = {'\n', '@'};
 
     int socket = (int)arg;
-    if(file = fopen("/home/pi/adv-sys-programming/tmp/file_", "r") == NULL){
+    if(file = fopen("/home/pi/adv-sys-programming/tmp/file_0001", "r") == NULL){
         perror("fopen");
         exit(1);
     }
