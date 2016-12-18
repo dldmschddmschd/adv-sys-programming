@@ -196,7 +196,7 @@ launch_server(void)
     setsockopt(serverSock, SOL_SOCKET, SO_REUSEADDR, (void *)&i, sizeof(i));
 
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_addr.s_addr = inet_addr(IP);
     serverAddr.sin_port = htons(PORT);
     
     if ((ret = bind(serverSock, (struct sockaddr *)&serverAddr,sizeof(serverAddr)))) {
@@ -279,7 +279,7 @@ void *client_connection(void *arg)
     char message[MAX_DATA];
     int i = 0, count = 0;
 
-    //수신된 메세지의 길이가 0이거나 %를 수신받는 경우에는 client의 연결이 종료된다.
+    //수신된 메세지의 길이가 0이거나 @를 수신받는 경우에는 client의 연결이 종료된다.
     while(1){
         if((str_len = read(clientSock, message, sizeof(message))) != 0) 
             break;
